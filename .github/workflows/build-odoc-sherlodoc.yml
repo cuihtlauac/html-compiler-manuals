@@ -91,6 +91,7 @@ jobs:
     needs: detect
     if: needs.detect.outputs.versions != '[]'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60 # a full build takes ~10 min
     strategy:
       fail-fast: false # one version failing must not cancel the others
       matrix:
@@ -105,10 +106,14 @@ jobs:
           key: opam-dl-${{ runner.os }}-${{ matrix.version }}
 
       - name: Install opam
+        # Bounded: a slow apt mirror once stalled this step for 20+ min.
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y opam
+          # --no-install-recommends: opam merely Recommends Ubuntu's own OCaml
+          # (~130 MB we never use; the switch builds its own compiler).
+          sudo apt-get install -y --no-install-recommends opam
           opam init --bare --disable-sandboxing -y
 
       - name: Build odoc + sherlodoc tree for ${{ matrix.version }}
