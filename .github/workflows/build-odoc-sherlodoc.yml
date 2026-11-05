@@ -30,33 +30,40 @@ jobs:
   # Compute the version matrix: the dispatch input, or (on push) the top-level
   # N.M/ directories that were added or modified, each filtered to >= 5.3.
   detect:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       versions: ${{ steps.set.outputs.versions }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # need history to diff before..after on push
       - id: set
         shell: bash
+        # Event data goes through env, never ${{ }} inside the script, so a
+        # crafted dispatch input cannot inject shell.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSIONS: ${{ github.event.inputs.versions }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
           # keep $1 iff it is >= 5.3 (the odoc-supported floor)
           floor_ok() { [ "$(printf '%s\n%s\n' "$1" 5.3 | sort -V | head -1)" = "5.3" ]; }
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             # whitespace-separated input -> one candidate per line
-            raw="$(printf '%s' "${{ github.event.inputs.versions }}" | tr ' \t' '\n')"
+            raw="$(printf '%s' "$INPUT_VERSIONS" | tr ' \t' '\n')"
           else
-            before="${{ github.event.before }}"
+            before="$BEFORE"
             # github.event.before is zeros / unreachable on first push or force-push.
             if ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              before="$(git rev-parse HEAD~1 2>/dev/null || true)"
+              before="$(git rev-parse "$AFTER~1" 2>/dev/null || true)"
             fi
             if [ -n "$before" ]; then
-              changed="$(git diff --name-only "$before" "${{ github.sha }}")"
+              changed="$(git diff --name-only "$before" "$AFTER")"
             else
-              changed="$(git show --name-only --pretty=format: "${{ github.sha }}")"
+              changed="$(git show --name-only --pretty=format: "$AFTER")"
             fi
             raw="$(printf '%s\n' "$changed" \
               | grep -E '^[0-9]+\.[0-9]+/' | cut -d/ -f1 | sort -u || true)"
@@ -65,6 +72,9 @@ jobs:
           selected=()
           while IFS= read -r m; do
             [ -n "$m" ] || continue
+            if ! [[ "$m" =~ ^[0-9]+\.[0-9]+$ ]]; then
+              echo "reject '$m': not an N.M OCaml minor version"; continue
+            fi
             if floor_ok "$m"; then selected+=("$m")
             else echo "skip $m: below odoc floor 5.3"; fi
           done <<< "$raw"
@@ -80,16 +90,16 @@ jobs:
   build:
     needs: detect
     if: needs.detect.outputs.versions != '[]'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false # one version failing must not cancel the others
       matrix:
         version: ${{ fromJSON(needs.detect.outputs.versions) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache opam download cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.opam/download-cache
           key: opam-dl-${{ runner.os }}-${{ matrix.version }}
@@ -102,10 +112,12 @@ jobs:
           opam init --bare --disable-sandboxing -y
 
       - name: Build odoc + sherlodoc tree for ${{ matrix.version }}
-        run: scripts/build-odoc-sherlodoc.sh "${{ matrix.version }}" _out
+        env:
+          VERSION: ${{ matrix.version }}
+        run: scripts/build-odoc-sherlodoc.sh "$VERSION" _out
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ocaml-${{ matrix.version }}-odoc-sherlodoc-html
           path: ocaml-${{ matrix.version }}-odoc-sherlodoc-html.tar.gz
@@ -114,11 +126,23 @@ jobs:
       - name: Publish to per-version release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ matrix.version }}
         run: |
           set -euo pipefail
-          tag="odoc-sherlodoc-${{ matrix.version }}"
-          asset="ocaml-${{ matrix.version }}-odoc-sherlodoc-html.tar.gz"
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" \
-            --title "odoc + sherlodoc docs for OCaml ${{ matrix.version }}" \
-            --notes "Auto-generated odoc HTML + client-side sherlodoc search + .html.json fragments for the OCaml ${{ matrix.version }} compiler distribution (stdlib + compiler-libs). Built by .github/workflows/build-odoc-sherlodoc.yml; see issue #14."
+          tag="odoc-sherlodoc-$VERSION"
+          asset="ocaml-$VERSION-odoc-sherlodoc-html.tar.gz"
+          {
+            echo "Auto-generated odoc HTML + client-side sherlodoc search + .html.json fragments for the OCaml $VERSION compiler distribution (stdlib + compiler-libs). Built by .github/workflows/build-odoc-sherlodoc.yml from $GITHUB_SHA; see issue #14."
+            echo
+            echo "Toolchain (the .html.json format must match ocaml.org's parser):"
+            echo
+            echo '```'
+            cat "ocaml-$VERSION-toolchain.txt"
+            echo '```'
+          } > notes.md
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file notes.md
+          else
+            gh release create "$tag" --title "odoc + sherlodoc docs for OCaml $VERSION" --notes-file notes.md
+          fi
           gh release upload "$tag" "$asset" --clobber

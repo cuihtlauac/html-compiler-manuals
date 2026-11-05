@@ -33,7 +33,15 @@ TARBALL="${TARBALL:-$REPO_ROOT/ocaml-$MINOR-odoc-sherlodoc-html.tar.gz}"
 # 1. Resolve <minor> to a concrete compiler package. opam needs an exact version
 #    (`5.3` is not a package version). Prefer the newest released
 #    ocaml-base-compiler patch for this minor; fall back to ocaml-variants.
-pick_newest() { tr ' ' '\n' | grep -E "^${MINOR//./\\.}\\." | sort -V | tail -n1; }
+#    Final releases win over ~alpha/~beta/~rc; a prerelease is only picked when
+#    the minor has no final release yet. (GNU sort -V orders 5.5.0~rc1 < 5.5.0.)
+pick_newest() {
+  local all finals
+  all="$(tr ' ' '\n' | grep -E "^${MINOR//./\\.}\\." || true)"
+  finals="$(printf '%s\n' "$all" | grep -v '~' || true)"
+  if [ -n "$finals" ]; then printf '%s\n' "$finals"; else printf '%s\n' "$all"; fi \
+    | grep -v '^$' | sort -V | tail -n1
+}
 
 BASE_VERSIONS="$(opam show -f all-versions ocaml-base-compiler 2>/dev/null || true)"
 COMPILER_VERSION="$(printf '%s' "$BASE_VERSIONS" | pick_newest || true)"
@@ -61,7 +69,9 @@ echo ">> OCaml $MINOR -> $COMPILER_PKG"
 #    yojson and dune ride along, which is all the parser check below needs.
 if [ ! -d "$SWITCH_DIR/_opam" ]; then
   mkdir -p "$SWITCH_DIR"
-  opam switch create "$SWITCH_DIR" "$COMPILER_PKG" odoc-driver -y
+  # yojson + dune are what ci/doccheck needs; listed explicitly rather than
+  # relied upon as transitive deps of odoc-driver.
+  opam switch create "$SWITCH_DIR" "$COMPILER_PKG" odoc-driver yojson dune -y
 fi
 
 # GOTCHA (from reproduce_v2.sh): pin the switch via OPAMSWITCH, not
@@ -79,6 +89,15 @@ RUN() { opam exec -- "$@"; }
 #    ocaml-compiler/<library>/), sherlodoc DBs, search assets wired in the
 #    correct order. --json-output additionally emits one .html.json per page
 #    plus per-package sidebar.json and status.json.
+# Record the toolchain: the .html.json format is unstable, so consumers need to
+# know which odoc produced a given artifact. Written next to the tarball (the
+# workflow puts it in the release notes) and echoed to the log.
+TOOLCHAIN_FILE="${TOOLCHAIN_FILE:-$REPO_ROOT/ocaml-$MINOR-toolchain.txt}"
+RUN opam list --columns=name,installed-version --short \
+  ocaml-base-compiler ocaml-variants odoc odoc-driver odoc-md sherlodoc yojson 2>/dev/null \
+  | awk 'NF==2 && $2!="--"' > "$TOOLCHAIN_FILE"
+echo ">> toolchain:"; sed 's/^/   /' "$TOOLCHAIN_FILE"
+
 rm -rf "$OUTDIR"
 RUN odoc_driver ocaml --json-output --html-dir "$OUTDIR"
 

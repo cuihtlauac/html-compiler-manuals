@@ -1,6 +1,7 @@
 (* Verbatim copy of the .html.json parsing layer from
    ocaml.org src/ocamlorg_package/lib/documentation.ml (lines 267-372),
-   minus the Package dependency, plus a main that runs it over files. *)
+   minus the Package dependency, plus a main that runs it over files.
+   Checked identical to ocaml/ocaml.org@134180e0eae7 on 2026-11-05. *)
 
 type toc = { title : string; href : string; children : toc list }
 

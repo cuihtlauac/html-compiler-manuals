@@ -5,3 +5,4 @@
 
 # dune build output of the .html.json parser-fidelity checker
 ci/doccheck/_build/
+/ocaml-*-toolchain.txt
