@@ -35,6 +35,11 @@ cd "$REPO_ROOT"
 
 SWITCH_DIR="${SWITCH_DIR:-$REPO_ROOT/_switch}"
 TARBALL="${TARBALL:-$REPO_ROOT/ocaml-$MINOR-odoc-sherlodoc-html.tar.gz}"
+# odoc_driver intermediates (.odoc/.odocl/index); kept for the dill index.js.
+WORK_DIR="${WORK_DIR:-$REPO_ROOT/_odoc_work}"
+# Second tree, laid out like dill (docs-ci's server) exposes packages.
+DILL_DIR="${DILL_DIR:-$REPO_ROOT/_dill}"
+DILL_TARBALL="${DILL_TARBALL:-$REPO_ROOT/ocaml-$MINOR-odoc-dill.tar.gz}"
 
 # yojson + dune are what ci/doccheck needs; listed explicitly rather than relied
 # upon as transitive deps of odoc-driver (which pulls odoc, sherlodoc, odoc-md).
@@ -117,9 +122,12 @@ echo ">> toolchain:"; sed 's/^/   /' "$TOOLCHAIN_FILE"
 #    (`ocaml` selects its dependency closure; the real content lands under
 #    ocaml-compiler/<library>/), sherlodoc DBs, search assets wired in the
 #    correct order. --json-output additionally emits one .html.json per page
-#    plus per-package sidebar.json and status.json.
-rm -rf "$OUTDIR"
-RUN odoc_driver ocaml --json-output --html-dir "$OUTDIR"
+#    plus per-package sidebar.json and status.json. The intermediate dirs are
+#    pinned (not temp) so step 5 can index the .odocl files.
+rm -rf "$OUTDIR" "$WORK_DIR"
+RUN odoc_driver ocaml --json-output --html-dir "$OUTDIR" \
+  --odoc-dir "$WORK_DIR/odoc" --odocl-dir "$WORK_DIR/odocl" \
+  --index-dir "$WORK_DIR/index" --mld-dir "$WORK_DIR/mld"
 
 N_HTML="$(find "$OUTDIR" -name '*.html' | wc -l)"
 N_JSON="$(find "$OUTDIR" -name '*.html.json' | wc -l)"
@@ -133,6 +141,16 @@ RUN dune build --root ci/doccheck
 find "$OUTDIR" -name '*.html.json' -print0 \
   | xargs -0 ci/doccheck/_build/default/check.exe
 
-# 5. Package the standalone tree (both halves plus search assets).
+# 5. dill-shaped tree: what dill serves per package (p/<pkg>/<ver>/status.json,
+#    doc/sidebar.json, doc/index.js, doc/**), with dill's url prefixes. index.js
+#    is the in-package search index ocaml.org loads; odoc_driver does not emit
+#    it, so it is made with the same odoc command docs-ci uses.
+RUN scripts/make-dill-tree.sh "$OUTDIR" "$WORK_DIR/odocl" "$DILL_DIR"
+scripts/check-dill-tree.sh "$DILL_DIR"
+
+# 6. Package both trees: the standalone site (native HTML + sherlodoc search,
+#    package dirs at the root) and the dill-shaped tree for ocaml.org.
 tar czf "$TARBALL" -C "$OUTDIR" .
 echo ">> wrote $TARBALL"
+tar czf "$DILL_TARBALL" -C "$DILL_DIR" .
+echo ">> wrote $DILL_TARBALL"

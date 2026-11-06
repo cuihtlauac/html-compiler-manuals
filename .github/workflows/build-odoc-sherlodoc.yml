@@ -124,8 +124,10 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ocaml-${{ matrix.version }}-odoc-sherlodoc-html
-          path: ocaml-${{ matrix.version }}-odoc-sherlodoc-html.tar.gz
+          name: ocaml-${{ matrix.version }}-odoc-sherlodoc
+          path: |
+            ocaml-${{ matrix.version }}-odoc-sherlodoc-html.tar.gz
+            ocaml-${{ matrix.version }}-odoc-dill.tar.gz
           retention-days: 14
 
       - name: Publish to per-version release
@@ -135,9 +137,11 @@ jobs:
         run: |
           set -euo pipefail
           tag="odoc-sherlodoc-$VERSION"
-          asset="ocaml-$VERSION-odoc-sherlodoc-html.tar.gz"
           {
             echo "Auto-generated odoc HTML + client-side sherlodoc search + .html.json fragments for the OCaml $VERSION compiler distribution (stdlib + compiler-libs). Built by .github/workflows/build-odoc-sherlodoc.yml from $GITHUB_SHA; see issue #14."
+            echo
+            echo "- \`ocaml-$VERSION-odoc-sherlodoc-html.tar.gz\`: standalone odoc site (native HTML + sherlodoc search), one directory per opam package."
+            echo "- \`ocaml-$VERSION-odoc-dill.tar.gz\`: the same docs laid out as dill (ocaml-docs-ci) serves a package: \`p/<pkg>/<ver>/status.json\` and \`p/<pkg>/<ver>/doc/{sidebar.json,index.js,**/*.html.json}\`."
             echo
             echo "Toolchain (the .html.json format must match ocaml.org's parser):"
             echo
@@ -150,4 +154,6 @@ jobs:
           else
             gh release create "$tag" --title "odoc + sherlodoc docs for OCaml $VERSION" --notes-file notes.md
           fi
-          gh release upload "$tag" "$asset" --clobber
+          gh release upload "$tag" --clobber \
+            "ocaml-$VERSION-odoc-sherlodoc-html.tar.gz" \
+            "ocaml-$VERSION-odoc-dill.tar.gz"
